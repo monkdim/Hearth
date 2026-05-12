@@ -9,6 +9,36 @@ final class Preferences {
     private static let temperatureKey = "hearth.temperature"
     private static let positionModeKey = "hearth.positionMode"
     private static let lastPanelOriginKey = "hearth.lastPanelOrigin"
+    /// Public so the engines can read it without taking a Preferences dependency.
+    static let mlxCacheLimitKey = "hearth.mlxCacheLimitMB"
+
+    enum CachePreset: Int, CaseIterable, Identifiable {
+        case conservative = 64    // 8 GB Macs
+        case balanced     = 256   // 12-16 GB Macs (lighter use)
+        case aggressive   = 512   // 16 GB Macs (default)
+        case generous     = 1024  // 24+ GB
+        case maximum      = 2048  // 32+ GB
+
+        var id: Int { rawValue }
+        var label: String {
+            switch self {
+            case .conservative: "Conservative · 64 MB"
+            case .balanced:     "Balanced · 256 MB"
+            case .aggressive:   "Aggressive · 512 MB"
+            case .generous:     "Generous · 1 GB"
+            case .maximum:      "Maximum · 2 GB"
+            }
+        }
+        var hint: String {
+            switch self {
+            case .conservative: "Best for 8 GB Macs. Lowest memory footprint, slowest tok/s."
+            case .balanced:     "Reasonable middle ground; works on most Macs."
+            case .aggressive:   "Default on 16 GB Macs. Trades some RAM for noticeably faster generation."
+            case .generous:     "For 24+ GB Macs (M-Pro 18/24 GB+, M-Max). Faster, holds more buffers."
+            case .maximum:      "Only for 32+ GB Macs running large models. Reserves significant RAM."
+            }
+        }
+    }
 
     enum PositionMode: String, CaseIterable, Identifiable {
         case centered
@@ -35,6 +65,15 @@ final class Preferences {
     var temperature: Double {
         didSet {
             UserDefaults.standard.set(temperature, forKey: Self.temperatureKey)
+        }
+    }
+
+    /// How much GPU buffer cache MLX is allowed to hold between tokens. Bigger
+    /// = faster generation, more RAM held. Engines re-read this on each
+    /// instantiation (i.e., next model swap or app restart).
+    var mlxCacheLimitMB: Int {
+        didSet {
+            UserDefaults.standard.set(mlxCacheLimitMB, forKey: Self.mlxCacheLimitKey)
         }
     }
 
@@ -75,6 +114,9 @@ final class Preferences {
 
         let storedPos = UserDefaults.standard.string(forKey: Self.positionModeKey)
         self.positionMode = storedPos.flatMap { PositionMode(rawValue: $0) } ?? .centered
+
+        let cacheMB = UserDefaults.standard.object(forKey: Self.mlxCacheLimitKey) as? Int
+        self.mlxCacheLimitMB = cacheMB ?? CachePreset.aggressive.rawValue
     }
 
     /// Discrete length presets for the response-length picker.

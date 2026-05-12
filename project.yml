@@ -28,6 +28,7 @@ targets:
       - path: Hearth
         excludes:
           - "Resources/Info.plist"
+          - "Resources/Hearth.entitlements"
     dependencies:
       - package: MLXSwiftExamples
         product: MLXLLM

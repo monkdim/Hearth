@@ -13,10 +13,47 @@ struct GeneralSettingsView: View {
 
                 temperatureSection
 
+                cacheSection
+
                 positionSection
             }
             .padding(.bottom, 12)
         }
+    }
+
+    // MARK: - MLX GPU cache
+
+    private var cacheSection: some View {
+        let selectedPreset = Preferences.CachePreset.allCases
+            .first(where: { $0.rawValue == preferences.mlxCacheLimitMB })
+            ?? .aggressive
+
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("MLX GPU cache").font(.headline)
+            Text("How much memory MLX is allowed to hold for transient buffers between tokens. Bigger = faster generation, more RAM held. Takes effect when you next switch models or restart Hearth.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Picker("Cache size", selection: Binding(
+                get: { selectedPreset },
+                set: { preferences.mlxCacheLimitMB = $0.rawValue }
+            )) {
+                ForEach(Preferences.CachePreset.allCases) { preset in
+                    Text(preset.label).tag(preset)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+
+            Text(selectedPreset.hint)
+                .font(.caption)
+                .foregroundStyle(.tint)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .background(.background.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator, lineWidth: 0.5))
     }
 
     // MARK: - Position

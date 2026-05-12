@@ -37,14 +37,14 @@ actor InferenceEngine {
     You are Hearth, a concise helpful assistant running locally on the user's Mac. \
     Be direct. Use Markdown for code blocks.
 
-    Tool use is a first-class part of your job. When the user asks for information you don't have, call the tool — never refuse.
+    Tool use is a first-class part of your job. When the user asks for information you don't have, CALL THE TOOL — never refuse.
 
-    For multi-step tasks (e.g. "read all files in this folder", "analyze every file", "check each item in the list"):
-      - Plan once at the start. Don't restate the plan in the chat — just execute.
-      - Call tools repeatedly until the task is genuinely complete.
-      - Do NOT pause to ask permission between tool calls. The user is not watching turn-by-turn; they're waiting for your final result.
-      - If a tool fails, try once more or move on — don't ask.
-      - When done with all the work, write the final answer once.
+    For multi-step tasks (e.g. "read all files in this folder", "analyze every file"):
+      - Don't narrate the plan. Just execute.
+      - Call tools repeatedly until the task is complete. The user is not watching turn-by-turn — they're waiting for your final result.
+      - Do NOT pause to ask permission between tool calls.
+      - If a tool fails, try once more or move on.
+      - When done with all work, write the final answer once.
     """
 
     /// Safety cap on tool-call iterations. Generous because "read every file in
@@ -54,7 +54,8 @@ actor InferenceEngine {
     init(modelConfiguration: ModelConfiguration, hub: HubApi) {
         self.modelConfiguration = modelConfiguration
         self.hub = hub
-        MLX.GPU.set(cacheLimit: 20 * 1024 * 1024)
+        let cacheMB = UserDefaults.standard.object(forKey: Preferences.mlxCacheLimitKey) as? Int ?? 512
+        MLX.GPU.set(cacheLimit: cacheMB * 1024 * 1024)
     }
 
     private func loadContainerIfNeeded(
@@ -153,7 +154,7 @@ actor InferenceEngine {
     ) async throws -> ToolCall? {
         MLXRandom.seed(UInt64(Date.timeIntervalSinceReferenceDate * 1000))
 
-        let chat = buildChat(conversation: conversation, promptContext: promptContext)
+        let chat = buildChat(conversation: conversation, promptContext: promptContext, toolbox: toolbox)
         let toolsSpec: [ToolSpec]? = toolbox.isEmpty ? nil : toolbox.schemas
         let userInput = UserInput(chat: chat, tools: toolsSpec)
         let parameters = GenerateParameters(
@@ -161,8 +162,10 @@ actor InferenceEngine {
             temperature: Float(temperature)
         )
 
-        // We use a small box so the closure can pass a captured tool call out.
+        // We use small boxes so the closure can pass captured state out.
         let box = ToolCallBox()
+        let accumulator = TextAccumulator()
+        let toolNames = Set(toolbox.entries.map { $0.name })
 
         try await container.perform { context in
             let lmInput = try await context.processor.prepare(input: userInput)
@@ -175,6 +178,18 @@ actor InferenceEngine {
                 if Task.isCancelled { break }
                 if let chunk = item.chunk {
                     continuation.yield(.token(chunk))
+                    let updated = await accumulator.appendAndReturn(chunk)
+                    // Early-exit: if a full JSON tool call has materialized in
+                    // the streamed text, stop generation now so the model
+                    // can't fan out into a flurry of duplicate calls (a real
+                    // problem with DeepSeek R1).
+                    if chunk.contains("}"),
+                       let fallback = Self.extractFallbackToolCall(
+                            from: updated, allowedNames: toolNames
+                       ) {
+                        await box.set(fallback)
+                        break
+                    }
                 }
                 if let info = item.info {
                     continuation.yield(.stats(tokensPerSecond: info.tokensPerSecond))
@@ -189,11 +204,75 @@ actor InferenceEngine {
         return await box.value
     }
 
+    /// Scans `text` for an explicit `TOOL_CALL: { ... }` directive (our
+    /// canonical format) or, as a wider net, any bare JSON object that has
+    /// `name` and `arguments` keys and a known tool name. Returns the first
+    /// match it finds.
+    private static func extractFallbackToolCall(
+        from text: String,
+        allowedNames: Set<String>
+    ) -> ToolCall? {
+        // Walk the text finding balanced { ... } regions.
+        for jsonBlob in extractJSONObjects(from: text) {
+            guard let data = jsonBlob.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+            guard let name = obj["name"] as? String,
+                  allowedNames.contains(name) else { continue }
+            let args = (obj["arguments"] as? [String: Any]) ?? [:]
+            return ToolCall(function: ToolCall.Function(name: name, arguments: args))
+        }
+        return nil
+    }
+
+    /// Extract every top-level balanced `{ ... }` substring. Handles strings
+    /// (so braces inside JSON string values don't confuse the depth counter)
+    /// and escape sequences. Simple, regex-free, good enough for tool calls.
+    private static func extractJSONObjects(from text: String) -> [String] {
+        var results: [String] = []
+        var depth = 0
+        var start: String.Index? = nil
+        var inString = false
+        var escape = false
+
+        var i = text.startIndex
+        while i < text.endIndex {
+            let ch = text[i]
+            if escape {
+                escape = false
+            } else if inString {
+                if ch == "\\" { escape = true }
+                else if ch == "\"" { inString = false }
+            } else {
+                switch ch {
+                case "\"":
+                    inString = true
+                case "{":
+                    if depth == 0 { start = i }
+                    depth += 1
+                case "}":
+                    depth -= 1
+                    if depth == 0, let s = start {
+                        let next = text.index(after: i)
+                        results.append(String(text[s..<next]))
+                        start = nil
+                    }
+                default:
+                    break
+                }
+            }
+            i = text.index(after: i)
+        }
+        return results
+    }
+
     private func buildChat(
         conversation: [ChatMessage],
-        promptContext: PromptContext
+        promptContext: PromptContext,
+        toolbox: ToolBox
     ) -> [MLXLMCommon.Chat.Message] {
-        var messages: [MLXLMCommon.Chat.Message] = [.system(buildSystemPrompt(promptContext))]
+        var messages: [MLXLMCommon.Chat.Message] = [.system(buildSystemPrompt(promptContext, toolbox: toolbox))]
         for msg in conversation {
             switch msg.role {
             case .user:
@@ -217,15 +296,19 @@ actor InferenceEngine {
         return messages
     }
 
-    private func buildSystemPrompt(_ ctx: PromptContext) -> String {
+    private func buildSystemPrompt(_ ctx: PromptContext, toolbox: ToolBox) -> String {
         var parts: [String] = [baseSystemPrompt]
+
+        if !toolbox.isEmpty {
+            parts.append(toolDirective(toolbox: toolbox))
+        }
 
         if let dir = ctx.workingDirectory, !dir.isEmpty {
             parts.append("""
             Current project: \(ctx.projectName)
             Working directory: \(dir)
 
-            When the user refers to "this folder" or omits a path in tool calls, default to that directory. You may use absolute paths or paths relative to it.
+            When the user refers to "this folder" or omits a path in tool calls, default to that directory. Use absolute paths or paths relative to it.
             """)
         } else if ctx.projectName != "General" {
             parts.append("Current project: \(ctx.projectName)")
@@ -241,6 +324,30 @@ actor InferenceEngine {
         }
 
         return parts.joined(separator: "\n\n---\n\n")
+    }
+
+    /// Inline tool description with an explicit emit format that any
+    /// instruction-tuned model can follow, regardless of whether its tokenizer
+    /// supports MLX's native tool-call channel.
+    private func toolDirective(toolbox: ToolBox) -> String {
+        var lines = [
+            "You have access to these tools. To call one, output a single line containing exactly:",
+            "",
+            "TOOL_CALL: {\"name\": \"<tool_name>\", \"arguments\": {<args>}}",
+            "",
+            "After you emit the line, stop and wait — the system will execute the tool and reply with the result. Do not fabricate results. Do not wrap the line in code fences or extra commentary. Available tools:",
+            ""
+        ]
+        for entry in toolbox.entries {
+            if let fn = entry.schema["function"] as? [String: Any],
+               let name = fn["name"] as? String {
+                let desc = (fn["description"] as? String) ?? ""
+                let params = (fn["parameters"] as? [String: Any])?["properties"] as? [String: Any] ?? [:]
+                let paramList = params.keys.sorted().joined(separator: ", ")
+                lines.append("- \(name)(\(paramList)) — \(desc)")
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 
     private static func encodeArguments(_ args: [String: JSONValue]) -> String {
@@ -259,4 +366,17 @@ actor InferenceEngine {
 private actor ToolCallBox {
     var value: ToolCall?
     func set(_ v: ToolCall) { value = v }
+}
+
+/// Same idea but accumulates streamed text so the fallback parser can examine
+/// it after the stream finishes.
+private actor TextAccumulator {
+    var value: String = ""
+    func append(_ s: String) { value += s }
+    /// Append and return the running total so callers can avoid an extra
+    /// hop back into the actor.
+    func appendAndReturn(_ s: String) -> String {
+        value += s
+        return value
+    }
 }

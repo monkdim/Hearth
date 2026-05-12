@@ -32,11 +32,14 @@ actor ImageEngine {
         self.hub = hub
         let lowMemory = MLX.GPU.memoryLimit < 8 * 1024 * 1024 * 1024
         self.loadConfiguration = LoadConfiguration(float16: true, quantize: lowMemory)
+        // Respect the user's MLX cache preference unless we've detected a
+        // genuinely tight memory situation, in which case we still cap low.
+        let userCacheMB = UserDefaults.standard.object(forKey: Preferences.mlxCacheLimitKey) as? Int ?? 256
         if lowMemory {
-            MLX.GPU.set(cacheLimit: 1 * 1024 * 1024)
+            MLX.GPU.set(cacheLimit: min(userCacheMB, 64) * 1024 * 1024)
             MLX.GPU.set(memoryLimit: 3 * 1024 * 1024 * 1024)
         } else {
-            MLX.GPU.set(cacheLimit: 256 * 1024 * 1024)
+            MLX.GPU.set(cacheLimit: userCacheMB * 1024 * 1024)
         }
     }
 

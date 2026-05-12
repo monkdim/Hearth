@@ -43,7 +43,8 @@ struct MessageBubble: View {
     // MARK: - Assistant
 
     private var assistantContent: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let display = Self.parseAssistant(message.content)
+        return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Image(systemName: "flame.fill")
                     .font(.system(size: 10, weight: .medium))
@@ -51,9 +52,13 @@ struct MessageBubble: View {
                 Text("Hearth")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
-                if isStreaming && isLast && message.content.isEmpty && !hasMedia {
+                if isStreaming && isLast && display.visible.isEmpty && !hasMedia {
                     ProgressView().controlSize(.mini)
                 }
+            }
+
+            if display.isThinking && display.visible.isEmpty {
+                thinkingIndicator
             }
 
             if let imagePath = message.imagePath {
@@ -66,18 +71,135 @@ struct MessageBubble: View {
                 MediaPlayerView(kind: .audio(path: audioPath))
             }
 
-            if !message.content.isEmpty {
-                Markdown(message.content)
+            if !display.visible.isEmpty {
+                Markdown(display.visible)
                     .markdownTheme(.ember)
                     .markdownCodeSyntaxHighlighter(.ember)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if display.hadHiddenReasoning {
+                ReasoningDisclosure(text: display.reasoning)
             }
         }
     }
 
     private var hasMedia: Bool {
         message.imagePath != nil || message.videoPath != nil || message.audioPath != nil
+    }
+
+    private var thinkingIndicator: some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.mini)
+            Text("Thinking…")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// Split an assistant message into the user-facing answer and the
+    /// reasoning blob inside `<think>…</think>` tags. Handles both the
+    /// fully-closed case (post-stream) and the open-tag case (mid-stream),
+    /// so DeepSeek R1's chain-of-thought doesn't flood the chat.
+    struct AssistantDisplay {
+        var visible: String       // text outside any <think>…</think>
+        var reasoning: String     // text inside <think>…</think> blocks
+        var isThinking: Bool      // currently inside an open <think>
+        var hadHiddenReasoning: Bool { !reasoning.isEmpty }
+    }
+
+    static func parseAssistant(_ text: String) -> AssistantDisplay {
+        var stripped = text
+        var reasoning = ""
+
+        // 1. Paired <think>…</think> blocks
+        let pairedPattern = "<think>([\\s\\S]*?)</think>"
+        if let regex = try? NSRegularExpression(pattern: pairedPattern) {
+            let range = NSRange(stripped.startIndex..., in: stripped)
+            let matches = regex.matches(in: stripped, range: range)
+            for m in matches.reversed() {
+                if let inner = Range(m.range(at: 1), in: stripped) {
+                    reasoning = stripped[inner] + (reasoning.isEmpty ? "" : "\n\n" + reasoning)
+                }
+                if let full = Range(m.range, in: stripped) {
+                    stripped.removeSubrange(full)
+                }
+            }
+        }
+
+        // 2. Orphan </think> — the tokenizer ate the opening <think>. Treat
+        //    everything before the closing tag as reasoning.
+        if let closeRange = stripped.range(of: "</think>") {
+            let prefix = stripped[..<closeRange.lowerBound]
+            if !prefix.isEmpty {
+                let prefixStr = String(prefix).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !prefixStr.isEmpty {
+                    reasoning = prefixStr + (reasoning.isEmpty ? "" : "\n\n" + reasoning)
+                }
+            }
+            stripped.removeSubrange(..<closeRange.upperBound)
+        }
+
+        // 3. Orphan <think> — mid-stream, no closing tag yet.
+        var isThinking = false
+        if let openRange = stripped.range(of: "<think>") {
+            let prefix = stripped[..<openRange.lowerBound]
+            stripped = String(prefix)
+            isThinking = true
+        }
+
+        // 4. Hide TOOL_CALL: lines from display — the tool-call card shows
+        //    the user what actually happened. Raw JSON would be noise.
+        let toolCallLine = "(?m)^\\s*TOOL_CALL:\\s*\\{[\\s\\S]*?\\}\\s*$"
+        if let regex = try? NSRegularExpression(pattern: toolCallLine) {
+            let range = NSRange(stripped.startIndex..., in: stripped)
+            stripped = regex.stringByReplacingMatches(
+                in: stripped, range: range, withTemplate: ""
+            )
+        }
+
+        return AssistantDisplay(
+            visible: stripped.trimmingCharacters(in: .whitespacesAndNewlines),
+            reasoning: reasoning.trimmingCharacters(in: .whitespacesAndNewlines),
+            isThinking: isThinking
+        )
+    }
+}
+
+/// Small expandable footer that lets the user peek at the model's hidden
+/// reasoning if they want. Default state collapsed.
+private struct ReasoningDisclosure: View {
+    let text: String
+    @State private var isExpanded: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .medium))
+                    Text("Reasoning")
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                Text(text)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.background.opacity(0.4),
+                                in: RoundedRectangle(cornerRadius: 6))
+            }
+        }
     }
 }
 
