@@ -54,6 +54,8 @@ Switching models in the chat header swaps the active one and reloads. Settings �
 
 **Sidecar mode.** When a model isn't in MLX yet (Flux, video, music, the bleeding edge), Hearth can talk to a separately-running ComfyUI or AUTOMATIC1111 over HTTP. You install the server yourself; Hearth becomes a frontend that routes prompts and renders the result inline. Bundled workflow templates as starting points for Flux Schnell, Mochi video, and MusicGen audio.
 
+**API server.** Hearth optionally exposes its active local model over an OpenAI-compatible HTTP endpoint (`/v1/chat/completions`). Off by default; toggle on in Settings → API Server. Useful when you want another tool to use Hearth's MLX brain — IDE plugins, scripts, and chat gateways like OpenClaw can all call Hearth as if it were a hosted LLM, with everything running on your machine. Bound to 127.0.0.1 only; protected by a bearer token Hearth generates. The same toolbox you've enabled in-app (`read_file`, `list_directory`, etc.) is exposed to API callers, so tool use works through the API too. See [Optional: OpenClaw integration](#optional-openclaw-integration) below for an end-to-end example.
+
 **Captured context.** Highlight text anywhere on macOS, hit the hotkey, and the selection attaches to your prompt as context. The model sees it as quoted material. Works in Safari, Notes, Xcode, terminals, most apps — anything that exposes selection through the Accessibility API. Falls back to your clipboard if Accessibility isn't granted.
 
 **Long-term memory extraction.** After a useful chat, hit Save Memory in the chat header. The active model summarizes durable facts (decisions, preferences, conventions) and appends them to the current project's LTM. Next chat in that project sees the notes automatically.
@@ -95,6 +97,76 @@ bash scripts/release.sh
 The script builds Release, code-signs with hardened runtime, submits to Apple's notary, staples the ticket, and writes `dist/Hearth-x.y.z.{dmg,zip}`. Notarization usually takes a few minutes; sometimes Apple drags their feet for half an hour.
 
 Without the env vars the script does ad-hoc signing — fine for local testing, won't open without right-click-Open on a friend's machine.
+
+## Optional: OpenClaw integration
+
+If you want a single place to chat with Hearth from outside your Mac — Discord, Telegram, an iMessage forwarder, whatever — [OpenClaw](https://openclaw.ai) is a free local gateway that fronts those channels and routes them to whichever LLM you point it at. With Hearth's API server on, OpenClaw can use your MLX model as its brain. Nothing leaves your machine; OpenClaw runs as a local daemon.
+
+Rough sketch:
+
+```
+Discord / iMessage / etc. ── OpenClaw (127.0.0.1:18789) ── Hearth API (127.0.0.1:11435) ── MLX
+```
+
+Setup:
+
+1. **Flip Hearth's API server on.** Settings → API Server → toggle on. Copy the bearer token and note the served model id (e.g. `mlx-community/Qwen2.5-Coder-14B-Instruct-4bit`).
+
+2. **Install OpenClaw.**
+
+   ```bash
+   curl -fsSL https://openclaw.ai/install.sh | bash
+   openclaw onboard --install-daemon
+   ```
+
+3. **Tell OpenClaw about Hearth.** Drop the following in `~/hearth-provider.patch.json5` (replace `YOUR_HEARTH_TOKEN`) and apply it:
+
+   ```json5
+   {
+     env: { HEARTH_API_KEY: "YOUR_HEARTH_TOKEN" },
+     models: {
+       providers: {
+         hearth: {
+           baseUrl: "http://127.0.0.1:11435/v1",
+           apiKey: "${HEARTH_API_KEY}",
+           api: "openai-completions",
+           models: [{
+             id: "mlx-community/Qwen2.5-Coder-14B-Instruct-4bit",
+             name: "Qwen 2.5 Coder 14B (Hearth)",
+             contextWindow: 32768,
+             maxTokens: 8192,
+           }],
+         },
+       },
+     },
+     agents: {
+       defaults: { model: { primary: "hearth/mlx-community/Qwen2.5-Coder-14B-Instruct-4bit" } },
+     },
+     gateway: {
+       http: { endpoints: { chatCompletions: { enabled: true } } },
+     },
+   }
+   ```
+
+   ```bash
+   openclaw config patch --file ~/hearth-provider.patch.json5
+   openclaw gateway restart
+   ```
+
+4. **Round-trip test.**
+
+   ```bash
+   curl -sS http://127.0.0.1:18789/v1/chat/completions \
+     -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"model":"openclaw/main","messages":[{"role":"user","content":"hi"}]}'
+   ```
+
+   If that returns a reply, you've got `you → OpenClaw → Hearth → MLX → back`.
+
+5. **Connect a channel.** Discord, Telegram, etc. — install the plugin (`openclaw plugins install clawhub:@openclaw/discord`) and patch the channel config. OpenClaw's docs cover the per-channel specifics.
+
+**Restricting file access per user.** Hearth treats any requested model id ending in `-readonly` as "no tools, chat only" — useful if you want different people to have different access levels. Register both ids on the Hearth provider, define a second OpenClaw agent that points at the `-readonly` variant, and route per-user with `bindings`. The admin user gets file access; everyone else gets a friendly LLM that politely declines anything filesystem-y.
 
 ## License
 

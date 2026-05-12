@@ -16,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let ltmExtractor: LTMExtractor
     let voiceInput: VoiceInputService
     let sidecarsStore: SidecarsStore
+    let apiServerStore: APIServerStore
+    private var apiServer: HearthAPIServer?
 
     override init() {
         // Migration MUST run before any store initializes so the stores find
@@ -39,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             appState: appState
         )
         self.voiceInput = VoiceInputService()
+        self.apiServerStore = APIServerStore()
         super.init()
     }
     private lazy var generationController = GenerationController(
@@ -68,7 +71,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toolsStore: toolsStore,
         projectsStore: projectsStore,
         voiceInput: voiceInput,
-        sidecarsStore: sidecarsStore
+        sidecarsStore: sidecarsStore,
+        apiServerStore: apiServerStore,
+        onAPIServerSettingsChanged: { [weak self] in self?.applyAPIServerSettings() }
     )
     private lazy var aboutController = AboutWindowController()
     private var statusItem: NSStatusItem?
@@ -80,6 +85,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installStatusItem()
         installHotkey()
         requestAccessibilityOnce()
+        applyAPIServerSettings()
+    }
+
+    /// Start / restart / stop the local OpenAI-compatible HTTP server based on
+    /// the current settings. Called at launch and whenever the user toggles
+    /// the switch or changes the port in Settings → API Server.
+    func applyAPIServerSettings() {
+        let store = apiServerStore
+        let manager = modelsManager
+        let tools = toolsStore
+        let projects = projectsStore
+        if store.isEnabled {
+            if apiServer == nil {
+                apiServer = HearthAPIServer(
+                    engineProvider: { manager.engine },
+                    modelIdProvider: { manager.activeModel.id },
+                    tokenProvider: { store.token },
+                    toolboxProvider: {
+                        // Same toolbox the launcher chat uses, so file_read /
+                        // list_directory / find_files / custom shell tools are
+                        // available to anything calling the API (OpenClaw, IDE
+                        // plugins, scripts).
+                        ToolBoxFactory.build(from: tools.enabledTools)
+                    },
+                    promptContextProvider: {
+                        // Seed the system prompt with the active project's
+                        // root + LTM so "what's in my repo?" works without the
+                        // caller having to pass paths through.
+                        let project = projects.activeProject
+                        let workingDir = project.rootPath
+                            .map { NSString(string: $0).expandingTildeInPath }
+                        return InferenceEngine.PromptContext(
+                            projectName: project.name,
+                            workingDirectory: workingDir,
+                            ltm: project.ltm
+                        )
+                    }
+                )
+            }
+            let port = store.port
+            let server = apiServer
+            Task { await server?.start(port: port) }
+        } else {
+            let server = apiServer
+            Task { await server?.stop() }
+        }
     }
 
     private func requestAccessibilityOnce() {
@@ -93,6 +144,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeyManager.unregister()
         chatsStore.saveNow()
         projectsStore.saveNow()
+        let server = apiServer
+        Task { await server?.stop() }
     }
 
     // MARK: - Status bar

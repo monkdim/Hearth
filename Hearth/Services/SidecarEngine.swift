@@ -59,6 +59,10 @@ actor SidecarEngine {
                     case .image: ext = "png"
                     case .video: ext = "mp4"
                     case .audio: ext = "wav"
+                    case .text:
+                        // Text-producing sidecars are routed through TextSidecarEngine,
+                        // not this one. If we got here it's a config mismatch.
+                        throw SidecarError.unsupported("Text sidecars don't run through the media engine.")
                     }
                     let outURL = outputDirectory.appending(path: "\(filenameStem).\(ext)")
 
@@ -69,6 +73,8 @@ actor SidecarEngine {
                     case .comfyUI:
                         try await self.runComfyUI(prompt: prompt, outURL: outURL,
                                                   continuation: continuation)
+                    case .openAIChat:
+                        throw SidecarError.unsupported("OpenAI-compatible sidecars are text-only; pick Text output.")
                     }
 
                     continuation.yield(.finished(outURL))
@@ -91,12 +97,21 @@ actor SidecarEngine {
                 url = base.appending(path: "sdapi/v1/options")
             case .comfyUI:
                 url = base.appending(path: "queue")
+            case .openAIChat:
+                // Standard OpenAI / Ollama / LM Studio liveness endpoint.
+                url = base.appending(path: "v1/models")
             }
-            let request = URLRequest(url: url, timeoutInterval: 4)
-            let (_, response) = try await session.data(for: request)
+            var request = URLRequest(url: url, timeoutInterval: 4)
+            if let key = await config.apiKey, !key.isEmpty {
+                request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            }
+            let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else { return "no http response" }
             if (200..<400).contains(http.statusCode) { return nil }
-            return "HTTP \(http.statusCode)"
+            // Surface the server's error body — OpenClaw returns a useful
+            // JSON message when the token is wrong / missing.
+            let bodyText = String(data: data.prefix(200), encoding: .utf8) ?? ""
+            return bodyText.isEmpty ? "HTTP \(http.statusCode)" : "HTTP \(http.statusCode): \(bodyText)"
         } catch {
             return error.localizedDescription
         }

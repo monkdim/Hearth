@@ -21,7 +21,7 @@ struct SidecarsSettingsView: View {
                 .buttonStyle(.borderedProminent)
             }
 
-            Text("Hearth can hand off generation to an external local server (AUTOMATIC1111, ComfyUI, …). Useful for models that don't run on MLX yet — Flux, Mochi, MusicGen, etc. You install the server separately and point Hearth at its URL.")
+            Text("Hearth can hand off generation to an external local server. Use this for media models that don't run on MLX yet (AUTOMATIC1111, ComfyUI for Flux / Mochi / MusicGen) or for text models served over OpenAI's chat API (Ollama, LM Studio, OpenClaw, vLLM). You install the server separately and point Hearth at its URL.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -210,21 +210,50 @@ private struct SidecarEditor: View {
                                 if draft.baseURL.isEmpty || isDefaultURL(draft.baseURL) {
                                     draft.baseURL = newBackend.defaultBaseURL
                                 }
-                            }
-                        }
-                        LabeledContent("Output") {
-                            Picker("Output", selection: $draft.output) {
-                                ForEach(SidecarOutput.allCases) { output in
-                                    Text(output.label).tag(output)
+                                // Text-producing backends pin output to .text;
+                                // media backends default to .image.
+                                if newBackend.producesText {
+                                    draft.output = .text
+                                } else if draft.output == .text {
+                                    draft.output = .image
                                 }
                             }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
+                        }
+                        // Output kind only makes sense for media backends —
+                        // openAIChat is text-only and chosen automatically.
+                        if !draft.backend.producesText {
+                            LabeledContent("Output") {
+                                Picker("Output", selection: $draft.output) {
+                                    ForEach(SidecarOutput.allCases.filter { $0 != .text }) { output in
+                                        Text(output.label).tag(output)
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                            }
                         }
                         LabeledContent("Base URL") {
-                            TextField("http://127.0.0.1:7860", text: $draft.baseURL)
+                            TextField(draft.backend.defaultBaseURL, text: $draft.baseURL)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(.body, design: .monospaced))
+                        }
+                        if draft.backend.producesText {
+                            LabeledContent("Model") {
+                                TextField("e.g. deepseek-r1:14b or openclaw/default", text: Binding(
+                                    get: { draft.model ?? "" },
+                                    set: { draft.model = $0.isEmpty ? nil : $0 }
+                                ))
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(.body, design: .monospaced))
+                            }
+                            LabeledContent("API key") {
+                                SecureField("Leave blank for Ollama / LM Studio. Required for OpenClaw.", text: Binding(
+                                    get: { draft.apiKey ?? "" },
+                                    set: { draft.apiKey = $0.isEmpty ? nil : $0 }
+                                ))
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(.body, design: .monospaced))
+                            }
                         }
                     }
 

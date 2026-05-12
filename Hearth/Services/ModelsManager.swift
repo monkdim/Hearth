@@ -21,11 +21,12 @@ enum InstallationState: Sendable, Hashable {
     var isPartial:   Bool { if case .partial   = self { true } else { false } }
 }
 
-/// Holds the currently-loaded inference engine. Text models use
-/// `InferenceEngine`; image models use `ImageEngine`; sidecar models talk
-/// over HTTP to a local external server.
+/// Holds the currently-loaded inference engine. Text models use anything
+/// that conforms to `TextEngine` (native MLX `InferenceEngine` or an
+/// OpenAI-compatible HTTP `TextSidecarEngine`); image models use
+/// `ImageEngine`; media sidecars talk over HTTP to a local external server.
 enum ActiveEngine: Sendable {
-    case text(InferenceEngine)
+    case text(any TextEngine)
     case image(ImageEngine)
     case sidecar(SidecarEngine)
 }
@@ -74,20 +75,31 @@ final class ModelsManager {
 
     /// Update the list of sidecars (called when SidecarsStore changes).
     /// Keeps the active model valid; if the active model was a sidecar that
-    /// got removed, falls back to the default text model.
+    /// got removed, falls back to the default text model. If the active
+    /// sidecar's config changed (URL, model name, output kind) we rebuild
+    /// the engine so the edit takes effect immediately.
     func refreshSidecars(_ updated: [SidecarConfig]) {
         sidecars = updated
         rescan()
-        if case .sidecar(let config) = activeModel.kind,
-           !updated.contains(where: { $0.id == config.id && $0.enabled }) {
-            setActive(AppModelRegistry.default)
+        if case .sidecar(let oldConfig) = activeModel.kind {
+            if let new = updated.first(where: { $0.id == oldConfig.id && $0.enabled }) {
+                if new != oldConfig {
+                    let refreshed = ModelInfo.sidecarModel(from: new)
+                    activeModel = refreshed
+                    activeEngine = Self.makeEngine(for: refreshed, hub: hub)
+                }
+            } else {
+                setActive(AppModelRegistry.default)
+            }
         }
     }
 
     // MARK: - Engine accessors
 
     /// Convenience: the active text engine. Returns nil when an image model is active.
-    var textEngine: InferenceEngine? {
+    /// Returns the protocol existential so callers can be ignorant of whether
+    /// it's MLX-native or an OpenAI-compatible HTTP sidecar.
+    var textEngine: (any TextEngine)? {
         if case .text(let engine) = activeEngine { return engine }
         return nil
     }
@@ -106,7 +118,7 @@ final class ModelsManager {
 
     /// Legacy accessor used by code that hasn't been updated to handle image
     /// models yet — for new code prefer `activeEngine` and switch on it.
-    var engine: InferenceEngine {
+    var engine: any TextEngine {
         // If the active model is image-kind, return a throwaway text engine so
         // we don't crash. Callers should be checking `activeModel.isImage` first.
         if let textEngine { return textEngine }
@@ -331,6 +343,13 @@ final class ModelsManager {
         case .image(let configuration):
             return .image(ImageEngine(configuration: configuration, hub: hub))
         case .sidecar(let config):
+            // Text-producing sidecars (OpenAI-compatible HTTP servers: Ollama,
+            // LM Studio, OpenClaw, vLLM, llama.cpp) flow through the regular
+            // text-engine path so chat/tool-calling/markdown rendering all
+            // work without special-casing.
+            if config.output == .text {
+                return .text(TextSidecarEngine(config: config))
+            }
             return .sidecar(SidecarEngine(config: config))
         }
     }

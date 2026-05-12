@@ -9,6 +9,8 @@ struct SettingsView: View {
     let projectsStore: ProjectsStore
     let voiceInput: VoiceInputService
     let sidecarsStore: SidecarsStore
+    @Bindable var apiServerStore: APIServerStore
+    let onAPIServerSettingsChanged: () -> Void
 
     var body: some View {
         TabView {
@@ -27,6 +29,14 @@ struct SettingsView: View {
             SidecarsSettingsView(sidecarsStore: sidecarsStore, modelsManager: modelsManager)
                 .tabItem { Label("Sidecars", systemImage: "network") }
                 .tag("sidecars")
+
+            APIServerSettingsView(
+                store: apiServerStore,
+                modelsManager: modelsManager,
+                onChange: onAPIServerSettingsChanged
+            )
+                .tabItem { Label("API Server", systemImage: "server.rack") }
+                .tag("api-server")
 
             ChatsSettingsView(
                 chatsStore: chatsStore,

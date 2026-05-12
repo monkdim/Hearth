@@ -248,6 +248,11 @@ final class GenerationController {
                         case .image: store.setLastAssistantImage(url.path)
                         case .video: store.setLastAssistantVideo(url.path)
                         case .audio: store.setLastAssistantAudio(url.path)
+                        case .text:
+                            // Text sidecars never reach this code path — they
+                            // flow through .text via TextSidecarEngine. Treat
+                            // this as a soft fallback if we ever land here.
+                            break
                         }
                         store.setLastAssistant("Generated via sidecar.")
                     }

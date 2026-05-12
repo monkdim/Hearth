@@ -11,6 +11,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let projectsStore: ProjectsStore
     private let voiceInput: VoiceInputService
     private let sidecarsStore: SidecarsStore
+    private let apiServerStore: APIServerStore
+    private let onAPIServerSettingsChanged: () -> Void
     private var window: NSWindow?
 
     init(
@@ -21,7 +23,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         toolsStore: ToolsStore,
         projectsStore: ProjectsStore,
         voiceInput: VoiceInputService,
-        sidecarsStore: SidecarsStore
+        sidecarsStore: SidecarsStore,
+        apiServerStore: APIServerStore,
+        onAPIServerSettingsChanged: @escaping () -> Void
     ) {
         self.modelsManager = modelsManager
         self.promptsStore = promptsStore
@@ -31,6 +35,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         self.projectsStore = projectsStore
         self.voiceInput = voiceInput
         self.sidecarsStore = sidecarsStore
+        self.apiServerStore = apiServerStore
+        self.onAPIServerSettingsChanged = onAPIServerSettingsChanged
     }
 
     func show() {
@@ -51,7 +57,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
                 toolsStore: toolsStore,
                 projectsStore: projectsStore,
                 voiceInput: voiceInput,
-                sidecarsStore: sidecarsStore
+                sidecarsStore: sidecarsStore,
+                apiServerStore: apiServerStore,
+                onAPIServerSettingsChanged: onAPIServerSettingsChanged
             )
         )
         let win = NSWindow(contentViewController: hostingController)
