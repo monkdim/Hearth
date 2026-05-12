@@ -1,0 +1,41 @@
+# Xcode / build
+DerivedData/
+build/
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+*.xccheckout
+*.moved-aside
+
+# Generated Xcode project (re-created from project.yml via xcodegen)
+*.xcodeproj/
+!*.xcodeproj/project.pbxproj
+
+# Swift Package Manager
+.swiftpm/
+.build/
+Package.resolved
+
+# Distribution artifacts — published as GitHub Releases instead of committed
+dist/
+*.dmg
+*.zip
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+
+# Secrets / signing
+*.cer
+*.p12
+*.key
+*.certSigningRequest
+*.mobileprovision
+
+# Local config
+.claude/settings.local.json
+
+# Generated app data (lives in ~/Library/Application Support/Hearth/)
+# nothing here, just a reminder

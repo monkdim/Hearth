@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      App is intentionally NOT sandboxed. We use:
+        - Carbon's RegisterEventHotKey (global hotkey)
+        - Accessibility API (reading selected text)
+        - User-chosen file system access (tools, project root)
+        - Outbound HTTP to Hugging Face + user-configured sidecars
+      None of these are practical inside the App Sandbox model.
+    -->
+
+    <!-- Microphone for the Whisper voice-input feature -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+
+    <!-- These two are needed when hardened runtime is on, otherwise MLX's
+         Metal kernels can't allocate executable memory on macOS 14+. -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <!-- Required for spawning shell commands (custom shell tools) -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+</dict>
+</plist>
